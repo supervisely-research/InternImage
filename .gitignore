@@ -9,6 +9,7 @@ demo/
 pretrained/
 upload.py
 data/
+work_dirs/
 
 *.pth
 *.jpg
