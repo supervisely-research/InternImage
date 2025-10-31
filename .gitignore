@@ -1,6 +1,6 @@
 .idea/
 .DS_Store
-__pycache__/
+__pycache__git/
 classification/convertor/
 segmentation/convertor/
 detection/convertor/
@@ -16,3 +16,4 @@ work_dirs/
 *.jpeg
 *.JPG
 *.png
+*__pycache__
