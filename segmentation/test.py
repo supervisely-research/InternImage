@@ -3,7 +3,7 @@
 # Copyright (c) 2022 OpenGVLab
 # Licensed under The MIT License [see LICENSE for details]
 # --------------------------------------------------------
-
+import mmseg_custom.datasets.tomato  # noqa: F401,F403
 import argparse
 import os
 import os.path as osp

@@ -8,3 +8,10 @@ checkpoint_dir/
 demo/
 pretrained/
 upload.py
+data/
+
+*.pth
+*.jpg
+*.jpeg
+*.JPG
+*.png
