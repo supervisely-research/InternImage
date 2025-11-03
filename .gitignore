@@ -10,6 +10,7 @@ pretrained/
 upload.py
 data/
 work_dirs/
+segmentation/ops_dcnv3/dist
 
 *.pth
 *.jpg
