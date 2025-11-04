@@ -1,0 +1,175 @@
+# --------------------------------------------------------
+# InternImage - Adaptive Learning Config
+# Based on L_5shot_seed0.py with adaptive learning modifications
+# --------------------------------------------------------
+
+_base_ = [
+    '../_base_/models/upernet_r50.py', 
+    '../_base_/datasets/ade20k.py',
+    '../_base_/default_runtime.py', 
+    '../_base_/schedules/schedule_160k.py'
+]
+
+# Import custom adaptive learning classes
+import sys
+sys.path.append('/root/workspace/InternImage/segmentation/mmseg_custom/datasets')
+import adaptive_learning_mmseg
+
+num_classes = 8
+pretrained = '/root/workspace/InternImage/upernet_internimage_l_640_160k_ade20k.pth'
+
+# Model configuration
+model = dict(
+    backbone=dict(
+        _delete_=True,
+        type='InternImage',
+        core_op='DCNv3',
+        channels=160,
+        depths=[5, 5, 22, 5],
+        groups=[10, 20, 40, 80],
+        mlp_ratio=4.,
+        drop_path_rate=0.4,
+        norm_layer='LN',
+        layer_scale=1.0,
+        offset_scale=2.0,
+        post_norm=True,
+        with_cp=False,
+        out_indices=(0, 1, 2, 3),
+        init_cfg=dict(type='Pretrained', checkpoint=pretrained)),
+    decode_head=dict(num_classes=num_classes, in_channels=[160, 320, 640, 1280]),
+    auxiliary_head=dict(num_classes=num_classes, in_channels=640),
+    test_cfg=dict(mode='whole'))
+
+# Image normalization
+img_norm_cfg = dict(
+    mean=[123.675, 116.28, 103.53], 
+    std=[58.395, 57.12, 57.375], 
+    to_rgb=True)
+
+crop_size = (512, 512)
+
+# Training pipeline
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations', reduce_zero_label=False),
+    dict(type='Resize', img_scale=(2560, 512), ratio_range=(0.5, 2.0)),
+    dict(type='RandomCrop', crop_size=crop_size, cat_max_ratio=0.75),
+    dict(type='RandomFlip', prob=0.5),
+    dict(type='PhotoMetricDistortion'),
+    dict(type='Normalize', **img_norm_cfg),
+    dict(type='Pad', size=crop_size, pad_val=0, seg_pad_val=255),
+    dict(type='DefaultFormatBundle'),
+    dict(type='Collect', keys=['img', 'gt_semantic_seg']),
+]
+
+# Test pipeline
+test_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(
+        type='MultiScaleFlipAug',
+        img_scale=(2560, 512),
+        flip=False,
+        transforms=[
+            dict(type='Resize', keep_ratio=True),
+            dict(type='ResizeToMultiple', size_divisor=32),
+            dict(type='RandomFlip'),
+            dict(type='Normalize', **img_norm_cfg),
+            dict(type='ImageToTensor', keys=['img']),
+            dict(type='Collect', keys=['img']),
+        ])
+]
+
+# Optimizer configuration
+optimizer = dict(
+    _delete_=True, 
+    type='AdamW', 
+    lr=0.00002, 
+    betas=(0.9, 0.999), 
+    weight_decay=0.05,
+    constructor='CustomLayerDecayOptimizerConstructor',
+    paramwise_cfg=dict(
+        num_layers=37, 
+        layer_decay_rate=0.94,
+        depths=[5, 5, 22, 5], 
+        offset_lr_scale=1.0))
+
+# Learning rate schedule
+lr_config = dict(
+    _delete_=True, 
+    policy='poly',
+    warmup='linear',
+    warmup_iters=200,
+    warmup_ratio=1e-3,
+    power=1.0, 
+    min_lr=0.0, 
+    by_epoch=False)
+
+# Data configuration with AdaptiveTomatoDataset
+data = dict(
+    samples_per_gpu=2,
+    workers_per_gpu=1,
+    train=dict(
+        _delete_=True,
+        type='AdaptiveTomatoDataset',
+        data_root='/root/workspace/InternImage/data/train_5shot_seed0/',
+        img_dir='images/training',
+        ann_dir='annotations/training',
+        pipeline=train_pipeline,
+        # Adaptive learning parameters
+        max_samples=5,           # Maximum number of samples
+        initial_samples=3,       # Start with 2 samples
+        samples_per_stage=1      # Add 1 sample per stage
+    ),
+    val=dict(
+        type='TomatoDataset',
+        data_root='/root/workspace/InternImage/data/val/',
+        img_dir='images/validation',
+        ann_dir='annotations/validation',
+        pipeline=test_pipeline),
+    test=dict(
+        type='TomatoDataset',
+        data_root='/root/workspace/InternImage/data/val/',
+        img_dir='images/validation',
+        ann_dir='annotations/validation',
+        pipeline=test_pipeline))
+
+# Runner configuration
+runner = dict(type='IterBasedRunner', max_iters=2000)
+
+# Optimizer wrapper
+optimizer_config = dict(
+    _delete_=True, 
+    grad_clip=dict(max_norm=0.1, norm_type=2))
+
+# Checkpoint configuration
+checkpoint_config = dict(
+    by_epoch=False, 
+    interval=500, 
+    max_keep_ckpts=3)  # Keep more checkpoints for adaptive stages
+
+# Evaluation configuration
+evaluation = dict(
+    interval=50, 
+    metric='mIoU', 
+    save_best='mIoU')
+
+# Add adaptive learning hook
+custom_hooks = [
+    dict(
+        type='AdaptiveLearningHook',
+        iters_per_stage=200,     # Add samples every 400 iterations
+        save_checkpoint=True     # Save checkpoint when adding samples
+    )
+]
+
+# Work directory
+# work_dir = './work_dirs/adaptive_L_5shot_seed0'
+
+# Logging
+log_config = dict(
+    interval=10,
+    hooks=[
+        dict(type='TextLoggerHook', by_epoch=False),
+        dict(type='TensorboardLoggerHook')
+    ])
+    
