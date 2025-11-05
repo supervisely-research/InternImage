@@ -185,9 +185,45 @@ class AdaptiveLearningWithLossDecayHook(Hook):
         self.original_lr = None
         self.warmup_start_iter = None
 
-        self.reached_max_samples = False
+        # Store original values for adaptive scaling
         self.original_decay_threshold = decay_threshold
         self.original_patience = patience
+        self.original_windows_size = window_size
+
+    def _get_adaptive_parameters(self, n_samples):
+        """
+        Calculate adaptive early stopping parameters based on current sample count.
+        
+        Logic:
+        - Few samples (2-3) -> strict (quick reaction to overfitting)
+        - Medium samples (4-6) -> moderate tolerance
+        - Many samples (7+) -> high tolerance
+        
+        Returns:
+            tuple: (patience, decay_threshold)
+        """
+        if n_samples <= 2:
+            # Very strict - quick reaction
+            patience = self.original_patience // 3
+            decay_threshold = self.original_decay_threshold * 10.0
+            windows_size = self.original_windows_size
+        elif n_samples <= 3:
+            # Moderate
+            patience = self.original_patience
+            decay_threshold = self.original_decay_threshold
+            windows_size = self.original_windows_size
+        elif n_samples <= 4:
+            # Tolerant
+            patience = int(self.original_patience * 1.5)
+            decay_threshold = self.original_decay_threshold * 0.5
+            windows_size = self.original_windows_size
+        else:
+            # Very tolerant
+            patience = max(15, self.original_patience * 2)
+            decay_threshold = self.original_decay_threshold * 0.01
+            windows_size = self.original_windows_size * 2
+        
+        return int(patience), decay_threshold, windows_size
     
     def before_train_iter(self, runner):
         """Check if we should add samples based on iteration count."""
@@ -268,24 +304,14 @@ class AdaptiveLearningWithLossDecayHook(Hook):
             self.stage_count += 1
             self.last_add_iter = current_iter
             new_count = dataset.get_current_sample_count()
-
-            if new_count >= dataset.max_samples and not self.reached_max_samples:
-                self.reached_max_samples = True
-                runner.logger.info(f"[Adaptive Learning] Reached maximum samples: {new_count}")
-
-                old_threshold = self.decay_threshold
-                old_patience = self.patience
-                
-                self.decay_threshold = self.original_decay_threshold / 5.0  # 5x more tolerant
-                self.patience = self.original_patience * 2  # 2x more patient
-                self.patience_counter = 0  # Reset counter with new patience       
-
-                runner.logger.info(f"[Adaptive Learning] Reached max samples ({new_count}/{dataset.max_samples})")
-                runner.logger.info(f"[Adaptive Learning] Adjusting early stop parameters for final stage:")
-                runner.logger.info(f"  - decay_threshold: {old_threshold:.6f} -> {self.decay_threshold:.6f} (5x more tolerant)")
-                runner.logger.info(f"  - patience: {old_patience} -> {self.patience} (2x more patient)")
-                runner.logger.info(f"  - patience_counter: reset to 0")   
-
+            
+            # Update adaptive parameters based on new sample count
+            old_patience = self.patience
+            old_threshold = self.decay_threshold
+            
+            self.patience, self.decay_threshold, self.window_size = self._get_adaptive_parameters(new_count)
+            self.patience_counter = 0  # Reset counter with new parameters
+            
             # Reset iterator
             if hasattr(runner.data_loader, '_iterator'):
                 runner.data_loader._iterator = None
@@ -298,11 +324,26 @@ class AdaptiveLearningWithLossDecayHook(Hook):
             if self.lr_warmup_after_add and hasattr(runner, 'optimizer'):
                 self._apply_lr_warmup(runner, current_iter)
             
-            # Log
+            # Log with adaptive parameters
             runner.logger.info(
                 f"[Adaptive Learning] Stage {self.stage_count} at iter {current_iter}: "
                 f"samples {old_count} -> {new_count} (reason: {reason})"
             )
+            runner.logger.info(
+                f"[Adaptive Params] Adjusted early stop for {new_count} samples:"
+            )
+            runner.logger.info(
+                f"  - patience: {old_patience} -> {self.patience}"
+            )
+            runner.logger.info(
+                f"  - decay_threshold: {old_threshold:.6f} -> {self.decay_threshold:.6f}"
+            )
+            
+            # Check if reached max
+            if new_count >= dataset.max_samples:
+                runner.logger.info(
+                    f"[Adaptive Learning] Reached maximum samples: {new_count}/{dataset.max_samples}"
+                )
             
             # Save checkpoint
             if self.save_checkpoint:
